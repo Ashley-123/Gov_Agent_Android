@@ -103,6 +103,11 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.7.7")
     implementation("androidx.compose.material:material-icons-extended:1.6.3")
     
+    // 添加音频录制和播放相关依赖
+    implementation("androidx.media3:media3-exoplayer:1.2.1")
+    implementation("androidx.media3:media3-ui:1.2.1")
+    implementation("androidx.media3:media3-common:1.2.1")
+    
     // 替换网络请求依赖，使用WebClient来支持流式响应
     implementation("org.springframework:spring-webflux:5.3.29")
     implementation("io.projectreactor.netty:reactor-netty:1.0.35")
