@@ -2,4 +2,9 @@
 <resources>
 
     <style name="Theme.Gov_agent" parent="android:Theme.Material.Light.NoActionBar" />
+    
+    <style name="Theme.Gov_agent.Splash" parent="Theme.Gov_agent">
+        <item name="android:windowBackground">@drawable/splash_screen</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
 </resources>

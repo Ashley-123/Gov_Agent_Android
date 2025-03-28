@@ -3,6 +3,7 @@ package com.example.gov_agent.audio
 import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Environment
 import android.util.Log
 import java.io.File
 import java.io.IOException
@@ -15,12 +16,12 @@ class AudioRecorder(private val context: Context) {
 
     fun startRecording(): File? {
         try {
-            val audioDir = File(context.getExternalFilesDir(null), "Recordings")
+            val audioDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "GovAgent")
             if (!audioDir.exists()) {
                 audioDir.mkdirs()
             }
 
-            val fileName = "recording_${System.currentTimeMillis()}.mp3"
+            val fileName = "recording_${System.currentTimeMillis()}.m4a"
             outputFile = File(audioDir, fileName)
             
             recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -36,6 +37,7 @@ class AudioRecorder(private val context: Context) {
                 setOutputFile(outputFile?.absolutePath)
                 setAudioSamplingRate(44100)
                 setAudioEncodingBitRate(128000)
+                setAudioChannels(1)
                 
                 try {
                     prepare()

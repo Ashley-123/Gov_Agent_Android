@@ -34,7 +34,9 @@ data class ChatResponseMessage(
 // 用于UI显示的消息模型
 data class ChatMessage(
     val content: String,
-    val isUser: Boolean
+    val isUser: Boolean,
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val isLoading: Boolean = false
 )
 
 // 用于解析流响应的扩展函数
