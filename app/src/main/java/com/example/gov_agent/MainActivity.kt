@@ -1,4 +1,4 @@
-package com.example.gov_agent
+﻿package com.example.gov_agent
 
 import android.Manifest
 import android.content.Context
@@ -71,6 +71,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import androidx.navigation.NavType
 import coil.compose.AsyncImage
 import com.example.gov_agent.ui.theme.Gov_agentTheme
 import com.example.gov_agent.ui.theme.MessageBubbleReceived
@@ -123,6 +125,12 @@ import java.io.InputStreamReader
 import android.util.Log
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import com.example.gov_agent.api.ChatHistory
 
 // 会议记录数据类
 data class MeetingRecord(
@@ -346,6 +354,7 @@ object AppState {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -363,6 +372,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
+                    // 使用GovAgentApp函数替代直接使用NavHost
                     GovAgentApp()
                 }
             }
@@ -376,6 +386,7 @@ val LocalNavController = compositionLocalOf<NavHostController> { error("No NavCo
 @Composable
 fun GovAgentApp() {
     val navController = rememberNavController()
+    val chatViewModel = remember { ChatViewModel() }
     
     // 使用CompositionLocalProvider提供NavController给所有子组件
     CompositionLocalProvider(LocalNavController provides navController) {
@@ -384,14 +395,34 @@ fun GovAgentApp() {
         ) { innerPadding ->
             NavHost(
                 navController = navController, 
-                startDestination = "chat",
-                        modifier = Modifier.padding(innerPadding)
+                startDestination = "chat_history",
+                modifier = Modifier.padding(innerPadding)
             ) {
-                composable("chat") {
-                    ChatScreen()
+                composable("chat_history") {
+                    ChatHistoryScreen(
+                        onNewChat = { navController.navigate("new_chat") },
+                        onChatSelected = { chatId -> 
+                            navController.navigate("chat/$chatId")
+                        },
+                        viewModel = chatViewModel
+                    )
+                }
+                composable("new_chat") {
+                    ChatScreen(viewModel = chatViewModel)
+                }
+                composable(
+                    "chat/{chatId}",
+                    arguments = listOf(navArgument("chatId") { 
+                        type = NavType.StringType 
+                        nullable = true
+                        defaultValue = null
+                    })
+                ) { backStackEntry ->
+                    val chatId = backStackEntry.arguments?.getString("chatId")
+                    ChatScreen(chatId = chatId, viewModel = chatViewModel)
                 }
                 composable("meeting") {
-                    MeetingRecordScreen(onNavigateToChat = { navController.navigate("chat") })
+                    MeetingRecordScreen()
                 }
                 composable("profile") {
                     ProfileScreen()
@@ -402,7 +433,7 @@ fun GovAgentApp() {
 }
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
-    object Chat : Screen("chat", "智能问答", Icons.Default.Home)
+    object ChatHistory : Screen("chat_history", "对话历史", Icons.Default.Home)
     object Meeting : Screen("meeting", "办事记录", Icons.Default.Mic)
     object Profile : Screen("profile", "个人中心", Icons.Default.Person)
 }
@@ -432,8 +463,12 @@ fun BottomNavBar(navController: NavHostController) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
+fun ChatScreen(
+    chatId: String? = null,
+    viewModel: ChatViewModel = viewModel()
+) {
     val messages = viewModel.messages
     val isLoading by viewModel.isLoading
     var userInput by remember { mutableStateOf("") }
@@ -441,19 +476,41 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val focusRequester = remember { FocusRequester() }
+    val navController = LocalNavController.current
     
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    
+    // 加载历史对话
+    LaunchedEffect(chatId) {
+        if (chatId != null) {
+            val chatHistory = viewModel.chatHistories.find { it.id == chatId }
+            if (chatHistory != null) {
+                viewModel.loadChatHistory(chatHistory)
+            }
+        } else {
+            viewModel.startNewChat()
+        }
+    }
     
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .imePadding()
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-                .imePadding() // 整体跟随键盘
+            modifier = Modifier.fillMaxSize()
         ) {
+            // 顶部栏
+            TopAppBar(
+                title = { Text("智能问答") },
+                navigationIcon = {
+                    IconButton(onClick = { navController.navigateUp() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+            
             // 消息列表
             LazyColumn(
                 modifier = Modifier
@@ -480,7 +537,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                 }
             }
             
-            // 控制输入框与键盘之间的间距 - 只有在键盘可见时添加间距
+            // 控制输入框与键盘之间的间距
             if (imeVisible) {
                 Spacer(modifier = Modifier.height(8.dp))
             }
@@ -506,7 +563,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                             .focusRequester(focusRequester),
                         placeholder = { Text("请输入您的问题...") },
                         enabled = !isLoading,
-                        maxLines = 3 // 限制最大行数，防止输入框太大
+                        maxLines = 3
                     )
                     
                     IconButton(
@@ -514,9 +571,8 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                             if (userInput.isNotBlank()) {
                                 viewModel.sendMessage(userInput)
                                 userInput = ""
-                                // 发送消息后立即滚动到底部
                                 scope.launch {
-                                    delay(100) // 短暂延迟等待UI更新
+                                    delay(100)
                                     if (messages.isNotEmpty()) {
                                         scrollState.animateScrollToItem(messages.size - 1)
                                     }
@@ -796,7 +852,7 @@ data class PhotoRecord(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MeetingRecordScreen(onNavigateToChat: () -> Unit) {
+fun MeetingRecordScreen() {
     var isRecording by remember { mutableStateOf(false) }
     var recordingTime by remember { mutableStateOf(0L) }
     var audioRecords by remember { mutableStateOf(listOf<AudioRecord>()) }
@@ -2770,4 +2826,137 @@ private suspend fun sendFeedback(content: String, context: Context): Boolean {
             throw e
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatHistoryScreen(
+    onNewChat: () -> Unit,
+    onChatSelected: (String) -> Unit,
+    viewModel: ChatViewModel = viewModel()
+) {
+    var showDeleteDialog by remember { mutableStateOf<String?>(null) }
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF5F5F5))
+    ) {
+        // 顶部栏 (固定不滚动)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White)
+                .padding(16.dp)
+        ) {
+            Text(
+                text = "对话历史",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
+            
+            IconButton(
+                onClick = onNewChat,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "新建对话")
+            }
+        }
+        
+        // 可滚动的内容区域
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            // 历史对话列表
+            LazyColumn {
+                items(viewModel.chatHistories) { chat ->
+                    ChatHistoryItem(
+                        chat = chat,
+                        onClick = { onChatSelected(chat.id) },
+                        onDelete = { showDeleteDialog = chat.id }
+                    )
+                }
+            }
+        }
+    }
+    
+    // 删除确认对话框
+    if (showDeleteDialog != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = null },
+            title = { Text("确认删除") },
+            text = { Text("确定要删除这个对话吗？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteChatHistory(showDeleteDialog!!)
+                        showDeleteDialog = null
+                    }
+                ) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun ChatHistoryItem(
+    chat: ChatHistory,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable(onClick = onClick),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = chat.title,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = chat.lastMessage,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = formatTimestamp(chat.timestamp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            
+            IconButton(onClick = onDelete) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "删除对话"
+                )
+            }
+        }
+    }
+}
+
+private fun formatTimestamp(timestamp: Long): String {
+    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+    return sdf.format(Date(timestamp))
 }

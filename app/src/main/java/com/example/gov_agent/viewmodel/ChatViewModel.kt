@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.gov_agent.api.ChatMessage
 import com.example.gov_agent.api.ChatRepository
+import com.example.gov_agent.api.ChatHistory
 import kotlinx.coroutines.launch
 import android.util.Log
 import kotlinx.coroutines.flow.catch
@@ -19,6 +20,12 @@ class ChatViewModel : ViewModel() {
     // 聊天消息列表
     val messages = mutableStateListOf<ChatMessage>()
     
+    // 对话历史列表
+    val chatHistories = mutableStateListOf<ChatHistory>()
+    
+    // 当前对话ID
+    private var currentChatId: String? = null
+    
     // 加载状态
     val isLoading = mutableStateOf(false)
     
@@ -28,7 +35,7 @@ class ChatViewModel : ViewModel() {
     
     init {
         // 初始化欢迎消息
-        messages.add(ChatMessage("您好！我是您的智能助手，请问有什么可以帮您？", false))
+        startNewChat()
         
         // 预热DNS解析，但不阻塞UI线程
         viewModelScope.launch {
@@ -39,6 +46,45 @@ class ChatViewModel : ViewModel() {
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "DNS预热失败", e)
             }
+        }
+    }
+    
+    // 开始新对话
+    fun startNewChat() {
+        currentChatId = java.util.UUID.randomUUID().toString()
+        messages.clear()
+        messages.add(ChatMessage("您好！我是您的智能助手，请问有什么可以帮您？", false))
+        // 保存新对话到历史记录
+        saveCurrentChat()
+    }
+    
+    // 加载历史对话
+    fun loadChatHistory(chatHistory: ChatHistory) {
+        currentChatId = chatHistory.id
+        messages.clear()
+        messages.addAll(chatHistory.messages)
+    }
+    
+    // 保存当前对话到历史记录
+    private fun saveCurrentChat() {
+        if (messages.isEmpty()) return
+        
+        val title = messages.firstOrNull { it.isUser }?.content?.take(20) ?: "新对话"
+        val lastMessage = messages.lastOrNull()?.content ?: ""
+        
+        val chatHistory = ChatHistory(
+            id = currentChatId ?: java.util.UUID.randomUUID().toString(),
+            title = title,
+            messages = messages.toList(),
+            lastMessage = lastMessage
+        )
+        
+        // 更新或添加历史记录
+        val existingIndex = chatHistories.indexOfFirst { it.id == chatHistory.id }
+        if (existingIndex >= 0) {
+            chatHistories[existingIndex] = chatHistory
+        } else {
+            chatHistories.add(chatHistory)
         }
     }
     
@@ -65,6 +111,9 @@ class ChatViewModel : ViewModel() {
                         isLoading = false
                     )
                 }
+                
+                // 保存对话到历史记录
+                saveCurrentChat()
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "发送消息失败", e)
                 val errorMessage = when (e) {
@@ -77,9 +126,15 @@ class ChatViewModel : ViewModel() {
                     else -> "发生错误：${e.message}"
                 }
                 messages.add(ChatMessage(errorMessage, false))
+                saveCurrentChat()
             } finally {
                 isLoading.value = false
             }
         }
+    }
+    
+    // 删除历史对话
+    fun deleteChatHistory(chatId: String) {
+        chatHistories.removeAll { it.id == chatId }
     }
 } 

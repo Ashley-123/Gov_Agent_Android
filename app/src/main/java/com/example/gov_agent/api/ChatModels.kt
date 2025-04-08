@@ -39,6 +39,15 @@ data class ChatMessage(
     val isLoading: Boolean = false
 )
 
+// 对话历史数据模型
+data class ChatHistory(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val title: String,
+    val messages: List<ChatMessage>,
+    val timestamp: Long = System.currentTimeMillis(),
+    val lastMessage: String = ""
+)
+
 // 用于解析流响应的扩展函数
 fun String.parseChatResponse(): String? {
     return try {
