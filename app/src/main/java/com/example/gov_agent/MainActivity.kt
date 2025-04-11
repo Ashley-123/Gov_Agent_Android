@@ -43,6 +43,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -56,6 +58,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -137,6 +141,42 @@ import androidx.compose.material.icons.filled.Cloud
 import android.net.ConnectivityManager
 import android.os.Build
 import android.net.NetworkCapabilities
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.*
+
+// 用户数据类
+data class User(
+    val id: String,
+    val username: String,
+    val role: String
+)
+
+// 用户认证状态
+object AuthState {
+    var isLoggedIn by mutableStateOf(false)
+    var currentUser by mutableStateOf<User?>(null)
+    
+    // 模拟用户登录验证
+    fun login(username: String, password: String): Boolean {
+        // 这里仅作示例，实际项目中应连接真实的身份验证服务
+        if (username == "admin" && password == "123456") {
+            currentUser = User(
+                id = "12345",
+                username = username, // 使用用户输入的用户名
+                role = "admin"
+            )
+            isLoggedIn = true
+            return true
+        }
+        return false
+    }
+    
+    fun logout() {
+        currentUser = null
+        isLoggedIn = false
+    }
+}
 
 // 会议记录数据类
 data class MeetingRecord(
@@ -150,6 +190,33 @@ data class MeetingRecord(
     val photos: List<PhotoRecord>,
     val timestamp: Long = System.currentTimeMillis()
 )
+
+// SSL证书相关工具类
+object SSLUtil {
+    // 创建信任所有证书的TrustManager
+    fun getTrustAllCertsManager(): Array<TrustManager> {
+        return arrayOf(object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        })
+    }
+    
+    // 创建忽略主机名验证的HostnameVerifier
+    val allHostsValid = HostnameVerifier { _, _ -> true }
+    
+    // 配置信任自签名证书的SSLSocketFactory
+    fun getSSLSocketFactory(): SSLSocketFactory? {
+        return try {
+            val context = SSLContext.getInstance("TLS")
+            context.init(null, getTrustAllCertsManager(), SecureRandom())
+            context.socketFactory
+        } catch (e: Exception) {
+            Log.e("SSLUtil", "创建SSLSocketFactory失败", e)
+            null
+        }
+    }
+}
 
 // 工单信息数据类
 data class WorkOrder(
@@ -455,6 +522,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         
+        // 设置全局未捕获异常处理器
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Log.e("UncaughtException", "应用发生未捕获异常: ${throwable.message}", throwable)
+            Toast.makeText(
+                this,
+                "应用发生错误，请重新启动: ${throwable.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        
         // 加载本地存储的会议记录和工单信息
         AppState.loadMeetingRecordsFromLocal(this)
         AppState.loadWorkOrdersFromLocal(this)
@@ -483,62 +560,330 @@ val LocalNavController = compositionLocalOf<NavHostController> { error("No NavCo
 fun GovAgentApp() {
     val navController = rememberNavController()
     val chatViewModel = remember { ChatViewModel() }
+    val context = LocalContext.current
     
     // 使用CompositionLocalProvider提供NavController给所有子组件
     CompositionLocalProvider(LocalNavController provides navController) {
-        Scaffold(
-            bottomBar = { BottomNavBar(navController) }
-        ) { innerPadding ->
-            NavHost(
-                navController = navController, 
-                startDestination = "chat_history",
-                        modifier = Modifier.padding(innerPadding)
-            ) {
-                composable("chat_history") {
-                    ChatHistoryScreen(
-                        onNewChat = { navController.navigate("new_chat") },
-                        onChatSelected = { chatId -> 
-                            navController.navigate("chat/$chatId")
-                        },
-                        viewModel = chatViewModel
-                    )
+        // 根据登录状态决定显示登录页面还是主应用界面
+        if (!AuthState.isLoggedIn) {
+            LoginScreen(onLoginSuccess = { 
+                try {
+                    // 登录成功后更新状态
+                    AuthState.isLoggedIn = true
+                } catch (e: Exception) {
+                    Log.e("Login", "登录过程发生错误", e)
+                    Toast.makeText(
+                        context,
+                        "登录失败: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
-                composable("new_chat") {
-                    ChatScreen(viewModel = chatViewModel)
-                }
-                composable(
-                    "chat/{chatId}",
-                    arguments = listOf(navArgument("chatId") { 
-                        type = NavType.StringType 
-                        nullable = true
-                        defaultValue = null
-                    })
-                ) { backStackEntry ->
-                    val chatId = backStackEntry.arguments?.getString("chatId")
-                    ChatScreen(chatId = chatId, viewModel = chatViewModel)
-                }
-                composable("work_orders") {
-                    WorkOrderScreen(
-                        onWorkOrderSelected = { workOrderId -> 
-                            navController.navigate("meeting/$workOrderId")
-                        }
-                    )
-                }
-                composable(
-                    "meeting/{workOrderId}",
-                    arguments = listOf(navArgument("workOrderId") { 
-                        type = NavType.StringType 
-                        nullable = true
-                        defaultValue = null
-                    })
-                ) { backStackEntry ->
-                    val workOrderId = backStackEntry.arguments?.getString("workOrderId")
-                    MeetingRecordScreen(workOrderId = workOrderId)
-                }
-                composable("profile") {
-                    ProfileScreen()
+            })
+        } else {
+            Scaffold(
+                bottomBar = { BottomNavBar(navController) }
+            ) { innerPadding ->
+                NavHost(
+                    navController = navController, 
+                    startDestination = "chat_history",
+                    modifier = Modifier.padding(innerPadding)
+                ) {
+                    composable("chat_history") {
+                        ChatHistoryScreen(
+                            onNewChat = { navController.navigate("new_chat") },
+                            onChatSelected = { chatId -> 
+                                navController.navigate("chat/$chatId")
+                            },
+                            viewModel = chatViewModel
+                        )
+                    }
+                    composable("new_chat") {
+                        ChatScreen(viewModel = chatViewModel)
+                    }
+                    composable(
+                        "chat/{chatId}",
+                        arguments = listOf(navArgument("chatId") { 
+                            type = NavType.StringType 
+                            nullable = true
+                            defaultValue = null
+                        })
+                    ) { backStackEntry ->
+                        val chatId = backStackEntry.arguments?.getString("chatId")
+                        ChatScreen(chatId = chatId, viewModel = chatViewModel)
+                    }
+                    composable("work_orders") {
+                        WorkOrderScreen(
+                            onWorkOrderSelected = { workOrderId -> 
+                                navController.navigate("meeting/$workOrderId")
+                            }
+                        )
+                    }
+                    composable(
+                        "meeting/{workOrderId}",
+                        arguments = listOf(navArgument("workOrderId") { 
+                            type = NavType.StringType 
+                            nullable = true
+                            defaultValue = null
+                        })
+                    ) { backStackEntry ->
+                        val workOrderId = backStackEntry.arguments?.getString("workOrderId")
+                        MeetingRecordScreen(workOrderId = workOrderId)
+                    }
+                    composable("profile") {
+                        ProfileScreen()
+                    }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LoginScreen(onLoginSuccess: () -> Unit) {
+    val context = LocalContext.current
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var showError by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("用户名或密码错误") }
+    val focusManager = LocalFocusManager.current
+    val passwordVisualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation()
+    val scope = rememberCoroutineScope()
+    
+    // 使用状态变量来控制显示登录界面还是错误界面
+    var hasRenderError by remember { mutableStateOf(false) }
+    var renderErrorMessage by remember { mutableStateOf("") }
+
+    if (hasRenderError) {
+        // 显示错误界面
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.White),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "初始化失败",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Red
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = renderErrorMessage,
+                    fontSize = 16.sp,
+                    color = Color.Gray
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(
+                    onClick = {
+                        val intent = Intent(context, MainActivity::class.java)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        context.startActivity(intent)
+                    }
+                ) {
+                    Text("重新加载")
+                }
+            }
+        }
+    } else {
+        // 正常显示登录界面
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.White)
+                .clickable(onClick = { focusManager.clearFocus() }),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                // 应用图标
+                Box(
+                    modifier = Modifier
+                        .size(100.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "政",
+                        color = Color.White,
+                        fontSize = 48.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(32.dp))
+                
+                // 标题
+                Text(
+                    text = "政务助手",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // 副标题
+                Text(
+                    text = "智能辅助您的政务工作",
+                    fontSize = 16.sp,
+                    color = Color.Gray
+                )
+                
+                Spacer(modifier = Modifier.height(40.dp))
+                
+                // 用户名输入框
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text("用户名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = Color.LightGray
+                    ),
+                    enabled = !isLoading
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // 密码输入框
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("密码") },
+                    singleLine = true,
+                    visualTransformation = passwordVisualTransformation,
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (passwordVisible) "隐藏密码" else "显示密码"
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = Color.LightGray
+                    ),
+                    enabled = !isLoading
+                )
+                
+                Spacer(modifier = Modifier.height(24.dp))
+                
+                // 错误提示
+                AnimatedVisibility(visible = showError) {
+                    Text(
+                        text = errorMessage,
+                        color = Color.Red,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                }
+                
+                // 登录按钮
+                Button(
+                    onClick = {
+                        focusManager.clearFocus()
+                        isLoading = true
+                        
+                        // 模拟网络延迟
+                        scope.launch {
+                            try {
+                                delay(800)
+                                
+                                val success = AuthState.login(username, password)
+                                if (success) {
+                                    onLoginSuccess()
+                                } else {
+                                    errorMessage = "用户名或密码错误"
+                                    showError = true
+                                    isLoading = false
+                                }
+                            } catch (e: Exception) {
+                                Log.e("Login", "登录过程中发生错误", e)
+                                errorMessage = "登录失败: ${e.message}"
+                                showError = true
+                                isLoading = false
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    enabled = username.isNotBlank() && password.isNotBlank() && !isLoading,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("登 录", fontSize = 16.sp)
+                    }
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // 提示信息
+                Text(
+                    text = "默认用户名: admin, 密码: 123456",
+                    color = Color.Gray,
+                    fontSize = 12.sp
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // 名称提示
+                Text(
+                    text = "登录后用户名将显示在个人中心",
+                    color = Color(0xFF1E88E5),
+                    fontSize = 12.sp
+                )
+            }
+            
+            // 应用版本信息
+            Text(
+                text = "政务助手 v1.0.0",
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp),
+                color = Color.Gray,
+                fontSize = 12.sp
+            )
+        }
+    }
+    
+    // 使用LaunchedEffect捕获可能的渲染错误
+    LaunchedEffect(Unit) {
+        try {
+            // 可以在这里放置初始化代码
+        } catch (e: Exception) {
+            Log.e("LoginScreen", "初始化过程中发生错误", e)
+            hasRenderError = true
+            renderErrorMessage = e.message ?: "未知错误"
         }
     }
 }
@@ -2052,6 +2397,7 @@ fun ProfileScreen() {
     var showAboutDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showFeedbackDialog by remember { mutableStateOf(false) }
+    var showLogoutDialog by remember { mutableStateOf(false) }
     
     // 反馈文本
     var feedbackText by remember { mutableStateOf("") }
@@ -2099,7 +2445,7 @@ fun ProfileScreen() {
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "政",
+                        text = (AuthState.currentUser?.username?.firstOrNull() ?: "政").toString(),
                         color = Color.White,
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold
@@ -2113,13 +2459,13 @@ fun ProfileScreen() {
                         .padding(start = 16.dp)
                 ) {
                     Text(
-                        text = "政务工作人员",
+                        text = AuthState.currentUser?.username ?: "政务工作人员",
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "ID: 12345",
+                        text = "ID: ${AuthState.currentUser?.id ?: "12345"}",
                         color = Color.Gray
                     )
                 }
@@ -2152,6 +2498,12 @@ fun ProfileScreen() {
                     title = "关于", 
                     subtitle = "版本 1.0.0",
                     onClick = { showAboutDialog = true }
+                )
+                Divider()
+                ProfileMenuItem(
+                    title = "退出登录", 
+                    subtitle = "安全退出当前账号",
+                    onClick = { showLogoutDialog = true }
                 )
             }
         }
@@ -2682,6 +3034,32 @@ fun ProfileScreen() {
                 }
             }
         }
+    }
+    
+    // 登出确认对话框
+    if (showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutDialog = false },
+            title = { Text("退出登录") },
+            text = { Text("确定要退出当前账号吗？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showLogoutDialog = false
+                        AuthState.logout()
+                    }
+                ) {
+                    Text("确认")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showLogoutDialog = false }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
@@ -3578,76 +3956,29 @@ private suspend fun sendFeedback(content: String, context: Context): Boolean {
     return withContext(Dispatchers.IO) {
         try {
             // 检查网络连接
-            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-            val networkInfo = connectivityManager.activeNetworkInfo
-            if (networkInfo == null || !networkInfo.isConnected) {
+            if (!isNetworkAvailable(context)) {
                 throw Exception("网络连接不可用，请检查网络设置")
             }
 
             Log.d("Feedback", "开始发送反馈: ${content.take(50)}...")
             
-            // 创建URL
-            val url = URL("http://js2.blockelite.cn:14471/feedback")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.doOutput = true
-            connection.doInput = true
-            
-            // 设置连接和读取超时
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            
-            // 设置请求头
-            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-            
             // 创建JSON数据
-            val jsonBody = JSONObject()
-            jsonBody.put("content", content)
+            val jsonData = JSONObject().apply {
+                put("content", content)
+            }
             
-            // 写入请求体
-            val outputStream = DataOutputStream(connection.outputStream)
-            outputStream.write(jsonBody.toString().toByteArray(Charsets.UTF_8))
-            outputStream.flush()
-            outputStream.close()
-            
-            // 获取响应
-            val responseCode = connection.responseCode
-            Log.d("Feedback", "服务器响应码: $responseCode")
-            
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val inputStream = connection.inputStream
-                val reader = BufferedReader(InputStreamReader(inputStream))
-                val response = StringBuilder()
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    response.append(line)
-                }
-                reader.close()
-                inputStream.close()
+            try {
+                // 使用新的HttpClient类执行POST请求
+                val response = HttpClient.postJson(
+                    urlString = "https://175.12.103.10:58083/feedback",
+                    jsonData = jsonData,
+                    trustAllCertificates = true
+                )
                 
-                val responseText = response.toString()
-                Log.d("Feedback", "服务器响应: $responseText")
-                
-                // 检查是否成功
+                Log.d("Feedback", "服务器响应: $response")
                 return@withContext true
-            } else {
-                // 读取错误响应
-                val errorStream = connection.errorStream
-                val errorResponse = if (errorStream != null) {
-                    val reader = BufferedReader(InputStreamReader(errorStream))
-                    val response = StringBuilder()
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        response.append(line)
-                    }
-                    reader.close()
-                    errorStream.close()
-                    response.toString()
-                } else {
-                    "无错误详情"
-                }
-                
-                Log.e("Feedback", "HTTP错误: $responseCode, 响应: $errorResponse")
+            } catch (e: Exception) {
+                Log.e("Feedback", "发送反馈失败", e)
                 return@withContext false
             }
         } catch (e: Exception) {
@@ -3662,80 +3993,68 @@ private suspend fun fetchIncidentsFromAPI(context: Context) {
     return withContext(Dispatchers.IO) {
         try {
             // 检查网络连接
-            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-            val networkInfo = connectivityManager.activeNetworkInfo
-            if (networkInfo == null || !networkInfo.isConnected) {
+            if (!isNetworkAvailable(context)) {
                 throw Exception("网络连接不可用，请检查网络设置")
             }
+
+            Log.d("WorkOrder", "开始获取工单数据...")
             
-            val url = URL("http://175.12.103.10:58083/plugIn/search")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
+            // 使用新的HttpClient类执行GET请求
+            val response = HttpClient.get(
+                urlString = "https://175.12.103.10:58083/plugIn/search",
+                trustAllCertificates = true
+            )
             
-            val responseCode = connection.responseCode
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val inputStream = connection.inputStream
-                val reader = BufferedReader(InputStreamReader(inputStream))
-                val response = StringBuilder()
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    response.append(line)
+            Log.d("WorkOrder", "收到服务器响应")
+            
+            // 解析返回的JSON
+            val jsonResponse = JSONObject(response)
+            val code = jsonResponse.getInt("code")
+            
+            if (code == 200) {
+                val dataArray = jsonResponse.getJSONArray("data")
+                val incidents = mutableListOf<Incident>()
+                
+                for (i in 0 until dataArray.length()) {
+                    val incidentJson = dataArray.getJSONObject(i)
+                    incidents.add(
+                        Incident(
+                            eventCode = incidentJson.getString("eventCode"),
+                            name = incidentJson.getString("name"),
+                            phone = incidentJson.getString("phone"),
+                            eventTime = incidentJson.getString("eventTime"),
+                            deadline = incidentJson.getString("deadline"),
+                            description = incidentJson.getString("description")
+                        )
+                    )
                 }
-                reader.close()
                 
-                // 解析返回的JSON
-                val jsonResponse = JSONObject(response.toString())
-                val code = jsonResponse.getInt("code")
-                
-                if (code == 200) {
-                    val dataArray = jsonResponse.getJSONArray("data")
-                    val incidents = mutableListOf<Incident>()
-                    
-                    for (i in 0 until dataArray.length()) {
-                        val incidentJson = dataArray.getJSONObject(i)
-                        incidents.add(
-                            Incident(
-                                eventCode = incidentJson.getString("eventCode"),
-                                name = incidentJson.getString("name"),
-                                phone = incidentJson.getString("phone"),
-                                eventTime = incidentJson.getString("eventTime"),
-                                deadline = incidentJson.getString("deadline"),
-                                description = incidentJson.getString("description")
-                            )
+                // 将incidents转换为WorkOrder并更新到AppState
+                withContext(Dispatchers.Main) {
+                    val newWorkOrders = incidents.map { incident ->
+                        WorkOrder(
+                            eventNumber = incident.eventCode,
+                            name = incident.name,
+                            phoneNumber = incident.phone,
+                            eventTime = incident.eventTime,
+                            deadline = incident.deadline,
+                            description = incident.description
                         )
                     }
                     
-                    // 将incidents转换为WorkOrder并更新到AppState
-                    withContext(Dispatchers.Main) {
-                        val newWorkOrders = incidents.map { incident ->
-                            WorkOrder(
-                                eventNumber = incident.eventCode,
-                                name = incident.name,
-                                phoneNumber = incident.phone,
-                                eventTime = incident.eventTime,
-                                deadline = incident.deadline,
-                                description = incident.description
-                            )
-                        }
-                        
-                        // 清除现有数据，添加新数据
-                        AppState.workOrders.clear()
-                        AppState.workOrders.addAll(newWorkOrders)
-                        
-                        // 保存到本地存储
-                        AppState.saveWorkOrdersToLocal(context)
-                    }
-                } else {
-                    val msg = jsonResponse.optString("msg", "未知错误")
-                    throw Exception(msg)
+                    // 清除现有数据，添加新数据
+                    AppState.workOrders.clear()
+                    AppState.workOrders.addAll(newWorkOrders)
+                    
+                    // 保存到本地存储
+                    AppState.saveWorkOrdersToLocal(context)
                 }
             } else {
-                throw Exception("服务器返回错误: $responseCode")
+                val msg = jsonResponse.optString("msg", "未知错误")
+                throw Exception(msg)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("WorkOrder", "获取工单数据失败", e)
             throw Exception("获取工单数据失败: ${e.message}")
         }
     }
@@ -3763,118 +4082,83 @@ suspend fun uploadToCloud(
                 throw Exception("网络连接不可用，请检查网络设置")
             }
             
-            // 上传API地址
-            val url = URL("http://175.12.103.10:58083/events")
-            val boundary = UUID.randomUUID().toString()
-            
-            // 打开连接
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.doOutput = true
-            connection.doInput = true
-            connection.connectTimeout = 30000
-            connection.readTimeout = 30000
-            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-            
-            // 准备上传数据
-            val outputStream = connection.outputStream
-            val writer = outputStream.bufferedWriter()
-            
-            // 添加JSON数据部分
-            writer.write("--$boundary\r\n")
-            writer.write("Content-Disposition: form-data; name=\"data\"; type=application/json\r\n")
-            writer.write("Content-Type: application/json\r\n\r\n")
-            
-            // 创建JSON数据
+            // 创建包含JSON数据的文件
             val jsonData = JSONObject().apply {
                 put("eventCode", eventCode)
                 put("eventTime", eventTime)
                 put("summary", summary)
-            }
-            writer.write(jsonData.toString())
-            writer.write("\r\n")
+            }.toString()
             
-            // 添加照片文件
-            photos.forEachIndexed { index, uri ->
+            val jsonTempFile = File(context.cacheDir, "event_data.json")
+            jsonTempFile.writeText(jsonData)
+            
+            Log.d("CloudUpload", "开始上传数据到云端")
+            
+            // 上传每个照片文件
+            val photoResults = photos.mapIndexed { index, uri ->
                 try {
-                    val inputStream = context.contentResolver.openInputStream(uri)
-                    inputStream?.use { input ->
-                        writer.write("--$boundary\r\n")
-                        writer.write("Content-Disposition: form-data; name=\"photos\"; filename=\"photo_$index.jpg\"\r\n")
-                        writer.write("Content-Type: image/jpeg\r\n\r\n")
-                        writer.flush()
-                        
-                        // 写入文件内容
-                        val buffer = ByteArray(4096)
-                        var bytesRead: Int
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            outputStream.write(buffer, 0, bytesRead)
+                    val photoFile = context.contentResolver.openInputStream(uri)?.use { input ->
+                        val tempFile = File(context.cacheDir, "photo_$index.jpg")
+                        tempFile.outputStream().use { output ->
+                            input.copyTo(output)
                         }
-                        outputStream.flush()
-                        writer.write("\r\n")
+                        tempFile
+                    }
+                    
+                    if (photoFile != null) {
+                        // 上传照片文件
+                        val result = HttpClient.uploadFile(
+                            urlString = "https://175.12.103.10:58083/events",
+                            formData = mapOf("eventCode" to eventCode, "eventTime" to eventTime),
+                            fileField = "photos",
+                            file = photoFile,
+                            trustAllCertificates = true
+                        )
+                        Log.d("CloudUpload", "照片 $index 上传成功")
+                        true
+                    } else {
+                        Log.e("CloudUpload", "无法读取照片 $index")
+                        false
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("CloudUpload", "上传照片 $index 失败", e)
+                    false
                 }
             }
             
-            // 添加音频文件
-            audioFiles.forEachIndexed { index, file ->
+            // 上传每个音频文件
+            val audioResults = audioFiles.mapIndexed { index, file ->
                 try {
-                    val inputStream = FileInputStream(file)
-                    inputStream.use { input ->
-                        writer.write("--$boundary\r\n")
-                        writer.write("Content-Disposition: form-data; name=\"audios\"; filename=\"audio_$index.wav\"\r\n")
-                        writer.write("Content-Type: audio/wav\r\n\r\n")
-                        writer.flush()
-                        
-                        // 写入文件内容
-                        val buffer = ByteArray(4096)
-                        var bytesRead: Int
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            outputStream.write(buffer, 0, bytesRead)
-                        }
-                        outputStream.flush()
-                        writer.write("\r\n")
-                    }
+                    // 上传音频文件
+                    val result = HttpClient.uploadFile(
+                        urlString = "https://175.12.103.10:58083/events",
+                        formData = mapOf("eventCode" to eventCode, "eventTime" to eventTime),
+                        fileField = "audios",
+                        file = file,
+                        trustAllCertificates = true
+                    )
+                    Log.d("CloudUpload", "音频 $index 上传成功")
+                    true
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("CloudUpload", "上传音频 $index 失败", e)
+                    false
                 }
             }
             
-            // 完成请求
-            writer.write("--$boundary--\r\n")
-            writer.flush()
-            writer.close()
+            // 返回上传结果
+            val successCount = photoResults.count { it } + audioResults.count { it }
+            val totalCount = photos.size + audioFiles.size
             
-            // 获取响应
-            val responseCode = connection.responseCode
-            val responseMessage = connection.responseMessage
-            
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                val response = connection.inputStream.bufferedReader().use { it.readText() }
-                val jsonResponse = JSONObject(response)
-                val code = jsonResponse.optInt("code")
-                val message = jsonResponse.optString("msg", null)  // 使用null作为默认值，而不是空字符串
-                
-                // 解析data部分
-                val data = jsonResponse.optJSONObject("data")
-                val dataMap = mutableMapOf<String, Any>()
-                
-                if (data != null) {
-                    val keys = data.keys()
-                    while (keys.hasNext()) {
-                        val key = keys.next()
-                        dataMap[key] = data.get(key)
-                    }
-                }
-                
-                UploadResponse(code, message, dataMap)
-            } else {
-                throw Exception("服务器返回错误: $responseCode $responseMessage")
-            }
+            UploadResponse(
+                code = 200,
+                message = "成功上传 $successCount / $totalCount 个文件",
+                data = mapOf(
+                    "successCount" to successCount,
+                    "totalCount" to totalCount
+                )
+            )
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("CloudUpload", "上传失败", e)
             throw Exception("上传失败: ${e.message}")
         }
     }

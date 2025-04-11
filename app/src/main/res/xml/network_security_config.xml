@@ -3,10 +3,22 @@
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
+            <certificates src="user" />
         </trust-anchors>
     </base-config>
+    
+    <!-- 明文流量允许的域名 -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">js2.blockelite.cn</domain>
         <domain includeSubdomains="true">47.98.99.126</domain>
+    </domain-config>
+    
+    <!-- 自签名证书配置 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">175.12.103.10</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
     </domain-config>
 </network-security-config> 
