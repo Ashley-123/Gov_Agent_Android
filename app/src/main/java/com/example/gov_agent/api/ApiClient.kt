@@ -16,6 +16,10 @@ object ApiClient {
     private const val CHAT_ENDPOINT = "/api/chat"
     private val gson = Gson()
     
+    // 系统提示词
+    private const val SYSTEM_PROMPT = """你是一个专为雨湖区服务的智能助手，名叫"雨湖智能助手"。
+你的任务是回答与雨湖区相关的问题，提供雨湖区的政策、办事指南、常见问题解答等信息。所有回答必须限定在雨湖区的范围内。如果用户的问题超出雨湖区，请礼貌地说明你只服务于雨湖区，并建议用户咨询其他相关机构。"""
+    
     /**
      * 使用HttpURLConnection发送聊天请求
      * @param userMessage 用户消息文本
@@ -34,6 +38,9 @@ object ApiClient {
             connection.connectTimeout = 30000
             connection.readTimeout = 30000
             
+            // 添加系统提示词到用户消息
+            val fullMessage = "$SYSTEM_PROMPT\n\n用户问题：$userMessage"
+            
             // 准备请求数据
             val requestBody = JSONObject().apply {
                 put("model", "deepseek-r1:32b")
@@ -41,6 +48,12 @@ object ApiClient {
                 
                 // 创建消息数组
                 val messagesArray = org.json.JSONArray().apply {
+                    // 添加系统消息
+                    put(JSONObject().apply {
+                        put("role", "system")
+                        put("content", SYSTEM_PROMPT)
+                    })
+                    
                     // 添加用户消息
                     put(JSONObject().apply {
                         put("role", "user")

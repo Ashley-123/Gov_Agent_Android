@@ -131,6 +131,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import com.example.gov_agent.api.ChatHistory
+import androidx.compose.ui.text.style.TextOverflow
+import kotlin.concurrent.fixedRateTimer
+import androidx.compose.material.icons.filled.Cloud
+import android.net.ConnectivityManager
+import android.os.Build
+import android.net.NetworkCapabilities
 
 // 会议记录数据类
 data class MeetingRecord(
@@ -145,9 +151,38 @@ data class MeetingRecord(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+// 工单信息数据类
+data class WorkOrder(
+    val id: String = UUID.randomUUID().toString(),
+    val eventNumber: String, // 事件编号
+    val name: String, // 姓名
+    val phoneNumber: String, // 电话号码
+    val eventTime: String, // 事发时间
+    val deadline: String, // 处理期限
+    val description: String, // 事件描述
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+// API工单响应数据类
+data class IncidentResponse(
+    val code: Int,
+    val msg: String?,
+    val data: List<Incident>
+)
+
+data class Incident(
+    val eventCode: String,
+    val name: String,
+    val phone: String,
+    val eventTime: String,
+    val deadline: String,
+    val description: String
+)
+
 // 添加应用级共享状态
 object AppState {
     val meetingRecords = mutableStateListOf<MeetingRecord>()
+    val workOrders = mutableStateListOf<WorkOrder>()
 
     // 添加本地存储相关方法
     fun saveMeetingRecordsToLocal(context: Context) {
@@ -310,6 +345,66 @@ object AppState {
         }
     }
     
+    // 保存工单信息到本地存储
+    fun saveWorkOrdersToLocal(context: Context) {
+        try {
+            val sharedPrefs = context.getSharedPreferences("gov_agent_prefs", Context.MODE_PRIVATE)
+            val ordersList = mutableListOf<JSONObject>()
+            
+            workOrders.forEach { order ->
+                val orderJson = JSONObject().apply {
+                    put("id", order.id)
+                    put("eventNumber", order.eventNumber)
+                    put("name", order.name)
+                    put("phoneNumber", order.phoneNumber)
+                    put("eventTime", order.eventTime)
+                    put("deadline", order.deadline)
+                    put("description", order.description)
+                    put("timestamp", order.timestamp)
+                }
+                ordersList.add(orderJson)
+            }
+            
+            sharedPrefs.edit().putString("work_orders", JSONArray(ordersList).toString()).apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    // 从本地存储加载工单信息
+    fun loadWorkOrdersFromLocal(context: Context) {
+        try {
+            val sharedPrefs = context.getSharedPreferences("gov_agent_prefs", Context.MODE_PRIVATE)
+            val jsonString = sharedPrefs.getString("work_orders", null) ?: return
+            
+            val jsonArray = JSONArray(jsonString)
+            val loadedOrders = mutableListOf<WorkOrder>()
+            
+            for (i in 0 until jsonArray.length()) {
+                val orderJson = jsonArray.getJSONObject(i)
+                
+                loadedOrders.add(
+                    WorkOrder(
+                        id = orderJson.getString("id"),
+                        eventNumber = orderJson.getString("eventNumber"),
+                        name = orderJson.getString("name"),
+                        phoneNumber = orderJson.getString("phoneNumber"),
+                        eventTime = orderJson.getString("eventTime"),
+                        deadline = orderJson.getString("deadline"),
+                        description = orderJson.getString("description"),
+                        timestamp = orderJson.getLong("timestamp")
+                    )
+                )
+            }
+            
+            // 更新内存中的记录
+            workOrders.clear()
+            workOrders.addAll(loadedOrders)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+    
     // 辅助方法：将文件复制到应用永久存储目录
     private fun copyFileToAppStorage(context: Context, sourceFile: File, subFolder: String): File {
         val destinationDir = File(context.filesDir, subFolder).apply { mkdirs() }
@@ -360,8 +455,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         
-        // 加载本地存储的会议记录
+        // 加载本地存储的会议记录和工单信息
         AppState.loadMeetingRecordsFromLocal(this)
+        AppState.loadWorkOrdersFromLocal(this)
         
         // 设置软键盘不会遮挡内容
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
@@ -396,7 +492,7 @@ fun GovAgentApp() {
             NavHost(
                 navController = navController, 
                 startDestination = "chat_history",
-                modifier = Modifier.padding(innerPadding)
+                        modifier = Modifier.padding(innerPadding)
             ) {
                 composable("chat_history") {
                     ChatHistoryScreen(
@@ -421,8 +517,23 @@ fun GovAgentApp() {
                     val chatId = backStackEntry.arguments?.getString("chatId")
                     ChatScreen(chatId = chatId, viewModel = chatViewModel)
                 }
-                composable("meeting") {
-                    MeetingRecordScreen()
+                composable("work_orders") {
+                    WorkOrderScreen(
+                        onWorkOrderSelected = { workOrderId -> 
+                            navController.navigate("meeting/$workOrderId")
+                        }
+                    )
+                }
+                composable(
+                    "meeting/{workOrderId}",
+                    arguments = listOf(navArgument("workOrderId") { 
+                        type = NavType.StringType 
+                        nullable = true
+                        defaultValue = null
+                    })
+                ) { backStackEntry ->
+                    val workOrderId = backStackEntry.arguments?.getString("workOrderId")
+                    MeetingRecordScreen(workOrderId = workOrderId)
                 }
                 composable("profile") {
                     ProfileScreen()
@@ -433,8 +544,8 @@ fun GovAgentApp() {
 }
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
-    object ChatHistory : Screen("chat_history", "对话历史", Icons.Default.Home)
-    object Meeting : Screen("meeting", "办事记录", Icons.Default.Mic)
+    object ChatHistory : Screen("chat_history", "政务问答", Icons.Default.Home)
+    object WorkOrders : Screen("work_orders", "工单信息", Icons.Default.Mic)
     object Profile : Screen("profile", "个人中心", Icons.Default.Person)
 }
 
@@ -444,13 +555,13 @@ fun BottomNavBar(navController: NavHostController) {
     val currentDestination = navBackStackEntry?.destination
 
     NavigationBar {
-        Screen::class.sealedSubclasses.map { it.objectInstance!! }.forEach { screen ->
+        // 修改导航项的顺序
             NavigationBarItem(
-                icon = { Icon(screen.icon, contentDescription = screen.label) },
-                label = { Text(screen.label) },
-                selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
+            icon = { Icon(Screen.ChatHistory.icon, contentDescription = Screen.ChatHistory.label) },
+            label = { Text(Screen.ChatHistory.label) },
+            selected = currentDestination?.hierarchy?.any { it.route == Screen.ChatHistory.route } == true,
                 onClick = {
-                    navController.navigate(screen.route) {
+                navController.navigate(Screen.ChatHistory.route) {
                         popUpTo(navController.graph.findStartDestination().id) {
                             saveState = true
                         }
@@ -459,7 +570,36 @@ fun BottomNavBar(navController: NavHostController) {
                     }
                 }
             )
-        }
+        
+        NavigationBarItem(
+            icon = { Icon(Screen.WorkOrders.icon, contentDescription = Screen.WorkOrders.label) },
+            label = { Text(Screen.WorkOrders.label) },
+            selected = currentDestination?.hierarchy?.any { it.route == Screen.WorkOrders.route } == true,
+            onClick = {
+                navController.navigate(Screen.WorkOrders.route) {
+                    popUpTo(navController.graph.findStartDestination().id) {
+                        saveState = true
+                    }
+                    launchSingleTop = true
+                    restoreState = true
+                }
+            }
+        )
+        
+        NavigationBarItem(
+            icon = { Icon(Screen.Profile.icon, contentDescription = Screen.Profile.label) },
+            label = { Text(Screen.Profile.label) },
+            selected = currentDestination?.hierarchy?.any { it.route == Screen.Profile.route } == true,
+            onClick = {
+                navController.navigate(Screen.Profile.route) {
+                    popUpTo(navController.graph.findStartDestination().id) {
+                        saveState = true
+                    }
+                    launchSingleTop = true
+                    restoreState = true
+                }
+            }
+        )
     }
 }
 
@@ -494,21 +634,24 @@ fun ChatScreen(
     
     Box(
         modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .imePadding()
+            .fillMaxWidth()
+            .fillMaxHeight()
+            .background(Color.White)
     ) {
         Column(
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding() // 确保内容随软键盘抬起
         ) {
             // 顶部栏
             TopAppBar(
-                title = { Text("智能问答") },
+                title = { },
                 navigationIcon = {
                     IconButton(onClick = { navController.navigateUp() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "返回")
                     }
-                }
+                },
+                modifier = Modifier.height(48.dp)
             )
             
             // 消息列表
@@ -544,14 +687,15 @@ fun ChatScreen(
             
             // 输入区域
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth(),
                 shadowElevation = 8.dp,
                 color = MaterialTheme.colorScheme.surface
             ) {
                 Row(
                     modifier = Modifier
-                        .padding(16.dp)
-                        .fillMaxWidth(),
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedTextField(
@@ -563,12 +707,18 @@ fun ChatScreen(
                             .focusRequester(focusRequester),
                         placeholder = { Text("请输入您的问题...") },
                         enabled = !isLoading,
-                        maxLines = 3
+                        maxLines = 3,
+                        shape = RoundedCornerShape(24.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = Color.LightGray
+                        )
                     )
                     
+                    // 发送按钮
                     IconButton(
                         onClick = {
-                            if (userInput.isNotBlank()) {
+                            if (userInput.isNotBlank() && !isLoading) {
                                 viewModel.sendMessage(userInput)
                                 userInput = ""
                                 scope.launch {
@@ -579,15 +729,18 @@ fun ChatScreen(
                                 }
                             }
                         },
-                        enabled = !isLoading && userInput.isNotBlank()
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(
+                                color = if (userInput.isNotBlank() && !isLoading) MaterialTheme.colorScheme.primary else Color.LightGray,
+                                shape = CircleShape
+                            ),
+                        enabled = userInput.isNotBlank() && !isLoading
                     ) {
                         Icon(
                             imageVector = Icons.Default.Send,
                             contentDescription = "发送",
-                            tint = if (!isLoading && userInput.isNotBlank())
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            tint = Color.White
                         )
                     }
                 }
@@ -852,7 +1005,7 @@ data class PhotoRecord(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MeetingRecordScreen() {
+fun MeetingRecordScreen(workOrderId: String? = null) {
     var isRecording by remember { mutableStateOf(false) }
     var recordingTime by remember { mutableStateOf(0L) }
     var audioRecords by remember { mutableStateOf(listOf<AudioRecord>()) }
@@ -864,8 +1017,10 @@ fun MeetingRecordScreen() {
     // 添加语音识别文本状态变量
     var transcriptText by remember { mutableStateOf("") }
     
-    // 上传状态
-    var isUploading by remember { mutableStateOf(false) }
+    // 分别为每个按钮创建独立的上传状态
+    var isGeneratingSummary by remember { mutableStateOf(false) }
+    var isSavingLocally by remember { mutableStateOf(false) }
+    var isUploadingToCloud by remember { mutableStateOf(false) }
     
     val context = LocalContext.current
     // 使用在GovAgentApp中创建的共享NavController，而不是创建新的
@@ -874,6 +1029,13 @@ fun MeetingRecordScreen() {
     val audioRecorder = remember { AudioRecorder(context) }
     val audioPlayer = remember { AudioPlayer(context) }
     val scrollState = rememberScrollState()
+    
+    // 获取工单信息
+    val workOrder = remember(workOrderId) {
+        workOrderId?.let { id ->
+            AppState.workOrders.find { it.id == id }
+        }
+    }
     
     // 相机启动器
     val cameraLauncher = rememberLauncherForActivityResult(
@@ -971,15 +1133,28 @@ fun MeetingRecordScreen() {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color.White)
-                .padding(16.dp)
+                .padding(horizontal = 16.dp, vertical = 6.dp)
         ) {
+            // 返回箭头
+            IconButton(
+                onClick = { navController.navigateUp() },
+                modifier = Modifier.align(Alignment.CenterStart)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "返回"
+                )
+            }
+            
+            // 状态文本放在右边
             Text(
                 text = if (isRecording) "录音中..." else "准备就绪",
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp,
-                modifier = Modifier.align(Alignment.CenterStart)
+                modifier = Modifier.align(Alignment.CenterEnd)
             )
             
+            // 录音时间显示在中间
             Text(
                 text = String.format("%02d:%02d", recordingTime / 60, recordingTime % 60),
                 fontSize = 22.sp,
@@ -995,6 +1170,59 @@ fun MeetingRecordScreen() {
                 .fillMaxSize()
                 .verticalScroll(scrollState)
         ) {
+            // 显示工单信息（如果有）
+            workOrder?.let { order ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        Text(
+                            text = "工单信息",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        
+                        Text(
+                            text = "事件编号: ${order.eventNumber}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Text(
+                            text = "姓名: ${order.name}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Text(
+                            text = "电话: ${order.phoneNumber}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Text(
+                            text = "事发时间: ${order.eventTime}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Text(
+                            text = "处理期限: ${order.deadline}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Text(
+                            text = "事件描述: ${order.description}",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            }
+            
             // 录音按钮
             Row(
                 modifier = Modifier
@@ -1421,11 +1649,11 @@ fun MeetingRecordScreen() {
                     }
                 }
                 
-                // 上传按钮
+                // 生成纪要按钮
                 Button(
                     onClick = { 
                         // 显示上传中状态
-                        isUploading = true
+                        isGeneratingSummary = true
                         
                         // 使用协程处理文件上传和保存
                         scope.launch {
@@ -1452,46 +1680,56 @@ fun MeetingRecordScreen() {
                                         
                                         val (summaryMarkdown, transcript, fileUrl) = uploadAudioAndGetSummary(audioFile, context)
                                         
-                                        // 添加详细日志
+                                        // 添加详细日志，但不显示给用户
                                         Log.d("MeetingRecord", "收到会议纪要长度: ${summaryMarkdown.length} 字符")
                                         Log.d("MeetingRecord", "收到会议纪要内容: $summaryMarkdown")
                                         Log.d("MeetingRecord", "收到转录文本: $transcript")
                                         Log.d("MeetingRecord", "收到文件URL: $fileUrl")
                                         
                                         if (summaryMarkdown.isNotEmpty()) {
-                                            // 先显示成功提示
-                                            withContext(Dispatchers.Main) {
-                                                Toast.makeText(
-                                                    context,
-                                                    "成功获取会议纪要，正在更新...",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                            }
-                                            
-                                            // 更新UI显示的会议纪要和转录文本（强制在主线程更新）
+                                            // 更新UI显示的会议纪要和转录文本（在主线程更新）
                                             withContext(Dispatchers.Main) {
                                                 meetingSummary = summaryMarkdown
                                                 
                                                 // 保存转录文本到状态变量
                                                 transcriptText = transcript ?: "未返回语音识别文本"
                                                 
-                                                // 强制刷新视图
-                                                (context as? MainActivity)?.let { activity ->
-                                                    activity.findViewById<androidx.compose.ui.platform.ComposeView>(android.R.id.content)?.let { view ->
-                                                        view.invalidate()
-                                                    }
-                                                }
-                                                
                                                 // 使用延迟确保UI更新完成
                                                 delay(500)
                                             }
                                             
+                                            // 不再自动保存到本地记录列表
+                                            /*
                                             // 创建新的会议记录
                                             val currentDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                                            
+                                            // 构建标题，包含工单信息
+                                            val title = workOrder?.let { 
+                                                "工单(${it.eventNumber}) 办事记录 $currentDate" 
+                                            } ?: "办事记录 $currentDate"
+                                            
+                                            // 添加工单信息到会议纪要开头
+                                            val summaryWithWorkOrder = workOrder?.let { order ->
+                                                """
+                                                <center># ${title}</center>
+                                                
+                                                ## 工单信息
+                                                **事件编号**: ${order.eventNumber}
+                                                **姓名**: ${order.name}
+                                                **电话**: ${order.phoneNumber}
+                                                **事发时间**: ${order.eventTime}
+                                                **处理期限**: ${order.deadline}
+                                                **事件描述**: ${order.description}
+                                                
+                                                ## 办事记录
+                                                ${summaryMarkdown.substringAfter("# 会议纪要")}
+                                                """.trimIndent()
+                                            } ?: summaryMarkdown
+                                            
                                             val newRecord = MeetingRecord(
-                                                title = "办事记录 $currentDate",
+                                                title = title,
                                                 date = currentDate,
-                                                summary = summaryMarkdown,
+                                                summary = summaryWithWorkOrder,
                                                 transcript = transcript,
                                                 fileUrl = fileUrl,
                                                 audioRecords = audioRecords,
@@ -1501,6 +1739,7 @@ fun MeetingRecordScreen() {
                                             AppState.meetingRecords.add(0, newRecord)
                                             // 保存到本地存储
                                             AppState.saveMeetingRecordsToLocal(context)
+                                            */
                                         } else {
                                             // 会议纪要为空
                                             withContext(Dispatchers.Main) {
@@ -1524,13 +1763,16 @@ fun MeetingRecordScreen() {
                                     }
                                 }
                                 
-                                // 显示成功提示
+                                // 修改成功提示，不再提示"保存成功"
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(
                                         context,
-                                        "记录已保存到本地",
+                                        "纪要生成成功",
                                         Toast.LENGTH_SHORT
                                     ).show()
+                                    
+                                    // 重置上传状态
+                                    isGeneratingSummary = false
                                 }
                             } catch (e: Exception) {
                                 e.printStackTrace()
@@ -1541,11 +1783,9 @@ fun MeetingRecordScreen() {
                                         "上传失败: ${e.message}",
                                         Toast.LENGTH_LONG
                                     ).show()
-                                }
-                            } finally {
-                                // 无论成功失败，都重置上传状态
-                                withContext(Dispatchers.Main) {
-                                    isUploading = false
+                                    
+                                    // 重置上传状态
+                                    isGeneratingSummary = false
                                 }
                             }
                         }
@@ -1557,9 +1797,9 @@ fun MeetingRecordScreen() {
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFF2196F3)
                     ),
-                    enabled = !isUploading && (audioRecords.isNotEmpty() || photos.isNotEmpty() || meetingSummary.isNotEmpty())
+                    enabled = !isGeneratingSummary && (audioRecords.isNotEmpty() || photos.isNotEmpty() || meetingSummary.isNotEmpty())
                 ) {
-                    if (isUploading) {
+                    if (isGeneratingSummary) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(24.dp),
                             color = Color.White,
@@ -1568,15 +1808,23 @@ fun MeetingRecordScreen() {
                         Spacer(modifier = Modifier.width(8.dp))
                     }
                     Text(
-                        text = if (isUploading) "处理中..." else "上传记录",
+                        text = if (isGeneratingSummary) "处理中..." else "生成纪要",
                         fontSize = 16.sp,
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
                 }
                 
-                // 保存记录按钮
+                // 保存记录和上传云端按钮（并排布局）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // 本地保存按钮
                 Button(
                     onClick = { 
+                            isSavingLocally = true
                         scope.launch {
                             try {
                                 // 如果没有会议纪要但有录音或照片，也可以保存
@@ -1588,10 +1836,34 @@ fun MeetingRecordScreen() {
                                 
                                 // 创建新的会议记录，包含语音识别文本
                                 val currentDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                                        
+                                    // 构建标题，包含工单信息
+                                    val title = workOrder?.let { 
+                                        "工单(${it.eventNumber}) 办事记录 $currentDate" 
+                                    } ?: "办事记录 $currentDate"
+                                        
+                                    // 添加工单信息到会议纪要开头
+                                    val summaryWithWorkOrder = workOrder?.let { order ->
+                                        """
+                                        <center># ${title}</center>
+                                        
+                                        ## 工单信息
+                                        **事件编号**: ${order.eventNumber}
+                                        **姓名**: ${order.name}
+                                        **电话**: ${order.phoneNumber}
+                                        **事发时间**: ${order.eventTime}
+                                        **处理期限**: ${order.deadline}
+                                        **事件描述**: ${order.description}
+                                        
+                                        ## 办事记录
+                                        ${summary.substringAfter("# 会议纪要")}
+                                        """.trimIndent()
+                                    } ?: summary
+                                        
                                 val newRecord = MeetingRecord(
-                                    title = "办事记录 $currentDate",
+                                        title = title,
                                     date = currentDate,
-                                    summary = summary,
+                                        summary = summaryWithWorkOrder,
                                     transcript = if (transcriptText.isNotEmpty()) transcriptText else null,
                                     fileUrl = null,
                                     audioRecords = audioRecords,
@@ -1603,20 +1875,26 @@ fun MeetingRecordScreen() {
                                 // 保存到本地存储
                                 AppState.saveMeetingRecordsToLocal(context)
                                 
-                                // 显示成功提示
+                                    // 显示成功提示，但不清空数据
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(
                                         context,
-                                        "记录已保存到本地",
+                                            "记录已保存",
                                         Toast.LENGTH_SHORT
                                     ).show()
-                                }
-                                
-                                // 清空当前页面的数据
-                                audioRecords = listOf()
-                                photos = listOf()
-                                meetingSummary = ""
-                                transcriptText = ""
+                                    
+                                        // 不再清空当前页面的数据
+                                        // audioRecords = listOf()
+                                        // photos = listOf()
+                                        // meetingSummary = ""
+                                        // transcriptText = ""
+                                        
+                                        // 重置保存状态
+                                        isSavingLocally = false
+                                        
+                                        // 可选：返回上一页面
+                                        // navController.navigateUp()
+                                    }
                             } catch (e: Exception) {
                                 e.printStackTrace()
                                 // 显示错误提示
@@ -1626,34 +1904,136 @@ fun MeetingRecordScreen() {
                                         "保存失败: ${e.message}",
                                         Toast.LENGTH_LONG
                                     ).show()
+                                    
+                                        // 重置保存状态
+                                        isSavingLocally = false
                                 }
                             }
                         }
                     },
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                            .weight(1f)
+                            .padding(vertical = 0.dp),
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFF4CAF50) // 绿色按钮，与上传按钮区分
                     ),
-                    enabled = audioRecords.isNotEmpty() || photos.isNotEmpty() || meetingSummary.isNotEmpty()
+                        enabled = !isSavingLocally && (audioRecords.isNotEmpty() || photos.isNotEmpty() || meetingSummary.isNotEmpty())
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                            if (isSavingLocally) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_save),
                             contentDescription = "保存",
                             tint = Color.White,
                             modifier = Modifier.size(20.dp)
                         )
+                            }
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "保存记录",
+                                text = if (isSavingLocally) "保存中..." else "本地保存",
                             fontSize = 16.sp,
                             modifier = Modifier.padding(vertical = 8.dp)
                         )
+                    }
+                }
+                        
+                    // 上传云端按钮
+                    Button(
+                        onClick = { 
+                            // 获取与当前会议相关的工单编号
+                            val eventCode = workOrder?.eventNumber ?: ""
+                            // 获取与当前会议相关的事发时间
+                            val eventTime = workOrder?.eventTime ?: SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+                            // 使用会议纪要作为摘要
+                            val summary = meetingSummary
+                            
+                            scope.launch {
+                                try {
+                                    // 显示上传中的提示
+                                    isUploadingToCloud = true
+                                    Toast.makeText(
+                                        context,
+                                        "正在上传到云端...",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    
+                                    // 调用上传函数
+                                    val response = uploadToCloud(
+                                        context = context, 
+                                        eventCode = eventCode,
+                                        eventTime = eventTime, 
+                                        summary = summary,
+                                        photos = photos.map { it.uri }, 
+                                        audioFiles = audioRecords.map { it.file }
+                                    )
+                                    
+                                    // 上传成功
+                                    Toast.makeText(
+                                        context,
+                                        "上传成功" + (if (response.message.isNullOrEmpty()) "" else ": ${response.message}"),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    
+                                    // 可以选择清除当前页面数据或保留
+                                    // audioRecords = listOf()
+                                    // photos = listOf()
+                                    // meetingSummary = ""
+                                    // transcriptText = ""
+                                    
+                                } catch (e: Exception) {
+                                    // 显示错误提示
+                                    Toast.makeText(
+                                        context,
+                                        "上传失败: ${e.message}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } finally {
+                                    isUploadingToCloud = false
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = 0.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF2196F3)
+                        ),
+                        enabled = (audioRecords.isNotEmpty() || photos.isNotEmpty() || meetingSummary.isNotEmpty()) && !isUploadingToCloud
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isUploadingToCloud) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Cloud,
+                                    contentDescription = "上传云端",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (isUploadingToCloud) "上传中..." else "上传云端",
+                                fontSize = 16.sp,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1687,7 +2067,7 @@ fun ProfileScreen() {
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color.White)
-                .padding(16.dp)
+                .padding(horizontal = 16.dp, vertical = 16.dp)
         ) {
             Text(
                 text = "个人中心",
@@ -2562,87 +2942,70 @@ private suspend fun uploadAudioAndGetSummary(audioFile: File, context: Context):
     }
 }
 
-// 修改会议纪要显示逻辑
+// 非Composable函数，用于解析JSON
+private fun parseJsonAndExtractSummary(jsonText: String): String? {
+    return try {
+        val jsonObject = JSONObject(jsonText)
+        if (jsonObject.has("summary")) {
+            val summary = jsonObject.optString("summary", "")
+            if (summary.isNotEmpty()) {
+                return summary
+            }
+        }
+        null
+    } catch (e: Exception) {
+        Log.e("MarkdownText", "JSON解析失败", e)
+        null
+    }
+}
+
+// Composable函数，用于显示内容
 @Composable
 fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
-    Column(modifier = modifier) {
-        // 先记录输入的Markdown内容
-        Log.d("MarkdownText", "收到Markdown内容 (${markdown.length}字符): ${markdown.take(100)}${if (markdown.length > 100) "..." else ""}")
+    // 使用remember来存储解析后的内容
+    val processedContent = remember(markdown) {
+        if (markdown.isBlank()) return@remember null
         
-        // 确保处理null或空字符串
-        if (markdown.isNullOrBlank()) {
-            Text(
-                text = "暂无会议纪要内容",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.Gray
-            )
-            return@Column
-        }
-        
-        // 规范化文本，处理各种换行符
         val normalizedText = markdown.replace("\r\n", "\n").replace("\r", "\n")
-        
-        // 按行分割
         val lines = normalizedText.split("\n")
         
-        // 记录分割后的行数
-        Log.d("MarkdownText", "分割为${lines.size}行")
-        
         if (lines.isEmpty() || (lines.size == 1 && lines[0].isBlank())) {
-            Text(
+            return@remember null
+        }
+        
+        // 如果是JSON格式，尝试解析
+        if (lines.size == 1 && (lines[0].startsWith("{") || lines[0].startsWith("["))) {
+            val jsonText = lines[0].trim()
+            if (jsonText.startsWith("{")) {
+                val summary = parseJsonAndExtractSummary(jsonText)
+                if (summary != null) {
+                    return@remember summary
+                }
+            }
+        }
+        
+        // 如果不是JSON或解析失败，返回原始内容
+        normalizedText
+    }
+    
+    Column(modifier = modifier) {
+        if (processedContent == null) {
+                Text(
                 text = "暂无会议纪要内容",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.Gray
             )
-            return@Column
-        }
-        
-        // 首先尝试检测是否是JSON格式
-        if (lines.size == 1 && (lines[0].startsWith("{") || lines[0].startsWith("["))) {
-            // 可能是JSON
-            val jsonText = lines[0].trim()
-            var isHandled = false
-            
-            if (jsonText.startsWith("{")) {
-                // 在调用Composable前捕获异常
-                val jsonSummary = parseJsonSummary(jsonText)
-                if (jsonSummary != null) {
-                    Log.d("MarkdownText", "从JSON中提取出summary: ${jsonSummary.take(50)}...")
-                    // 递归调用以显示提取的summary
-                    MarkdownText(jsonSummary, modifier)
-                    isHandled = true
-                }
-            }
-            
-            // 如果没有找到有效内容，显示原始JSON
-            if (!isHandled) {
-                Text(
-                    text = "服务器返回的JSON数据:\n$jsonText",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
-            }
             return@Column
         }
         
         // 处理每一行
-        lines.forEachIndexed { index, line ->
-            // 记录每行的处理
-            if (index < 10 || index >= lines.size - 10) { // 只记录前10行和后10行
-                Log.d("MarkdownText", "处理第${index+1}/${lines.size}行: '${line.take(50)}${if (line.length > 50) "..." else ""}'")
-            } else if (index == 10) {
-                Log.d("MarkdownText", "...")
-            }
-            
-            // 跳过空行，但保留一些垂直间距
+        processedContent.split("\n").forEach { line ->
             if (line.isBlank()) {
                 Spacer(modifier = Modifier.height(8.dp))
-                return@forEachIndexed
+                return@forEach
             }
             
             when {
-                // 一级标题 (# 标题)
                 line.startsWith("# ") -> {
                     Text(
                         text = line.removePrefix("# "),
@@ -2651,7 +3014,6 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
                 }
-                // 二级标题 (## 标题)
                 line.startsWith("## ") -> {
                     Text(
                         text = line.removePrefix("## "),
@@ -2659,7 +3021,6 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.padding(vertical = 6.dp)
                     )
                 }
-                // 三级标题 (### 标题)
                 line.startsWith("### ") -> {
                     Text(
                         text = line.removePrefix("### "),
@@ -2667,7 +3028,6 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
                 }
-                // 列表项 (- 项目)
                 line.startsWith("- ") -> {
                     Row(modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 4.dp)) {
                         Text("•", fontWeight = FontWeight.Bold)
@@ -2678,7 +3038,6 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                         )
                     }
                 }
-                // 数字列表 (1. 项目)
                 line.matches(Regex("^\\d+\\.\\s.*$")) -> {
                     val indexDot = line.indexOf(".")
                     if (indexDot > 0) {
@@ -2695,26 +3054,21 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                         }
                     }
                 }
-                // 粗体 (**文本**)
                 line.contains("**") -> {
-                    // 预处理parts以避免composable内的try/catch
                     val parts = line.split("**")
                     Row(modifier = Modifier.padding(vertical = 4.dp)) {
                         for (i in parts.indices) {
                             if (i % 2 == 1) {
-                                // 奇数索引的部分是加粗文本
                                 Text(
                                     text = parts[i],
                                     fontWeight = FontWeight.Bold
                                 )
                             } else {
-                                // 偶数索引的部分是普通文本
                                 Text(parts[i])
                             }
                         }
                     }
                 }
-                // 普通文本
                 else -> {
                     Text(
                         text = line,
@@ -2727,20 +3081,495 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
     }
 }
 
-// 安全地解析JSON并提取summary，不会抛出异常
-private fun parseJsonSummary(jsonText: String): String? {
-    return try {
-        val jsonObject = JSONObject(jsonText)
-        if (jsonObject.has("summary")) {
-            val summary = jsonObject.optString("summary", "")
-            if (summary.isNotEmpty()) {
-                return summary
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatHistoryScreen(
+    onNewChat: () -> Unit,
+    onChatSelected: (String) -> Unit,
+    viewModel: ChatViewModel = viewModel()
+) {
+    var showDeleteDialog by remember { mutableStateOf<String?>(null) }
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF5F5F5))
+    ) {
+        // 顶部栏 (固定不滚动)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White)
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = "智能问答",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
+            
+            IconButton(
+                onClick = onNewChat,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "新建对话")
             }
         }
-        null
+        
+        // 可滚动的内容区域
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            // 历史对话列表
+            LazyColumn {
+                items(viewModel.chatHistories) { chat ->
+                    ChatHistoryItem(
+                        chat = chat,
+                        onClick = { onChatSelected(chat.id) },
+                        onDelete = { showDeleteDialog = chat.id }
+                    )
+                }
+            }
+        }
+    }
+    
+    // 删除确认对话框
+    if (showDeleteDialog != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = null },
+            title = { Text("确认删除") },
+            text = { Text("确定要删除这个对话吗？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteChatHistory(showDeleteDialog!!)
+                        showDeleteDialog = null
+                    }
+                ) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun ChatHistoryItem(
+    chat: ChatHistory,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable(onClick = onClick),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp)
+            ) {
+                Text(
+                    text = chat.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = chat.lastMessage,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = formatTimestamp(chat.timestamp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            
+            IconButton(onClick = onDelete) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "删除对话"
+                )
+            }
+        }
+    }
+}
+
+private fun formatTimestamp(timestamp: Long): String {
+    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+    return sdf.format(Date(timestamp))
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WorkOrderScreen(
+    onWorkOrderSelected: (String) -> Unit
+) {
+    var showAddDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf<String?>(null) }
+    val workOrders = remember { AppState.workOrders }
+    val context = LocalContext.current
+    
+    // 添加工单的表单状态
+    var eventNumber by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var phoneNumber by remember { mutableStateOf("") }
+    var eventTime by remember { mutableStateOf("") }
+    var deadline by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    
+    // 提取工单状态
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    
+    // 显示错误消息对话框
+    if (errorMessage != null) {
+        AlertDialog(
+            onDismissRequest = { errorMessage = null },
+            title = { Text("错误") },
+            text = { Text(errorMessage!!) },
+            confirmButton = {
+                TextButton(onClick = { errorMessage = null }) {
+                    Text("确定")
+                }
+            }
+        )
+    }
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF5F5F5))
+    ) {
+        // 顶部栏 (固定不滚动)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White)
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = "工单信息",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
+            
+            // 添加两个按钮：提取工单和添加工单
+            Row(
+                modifier = Modifier.align(Alignment.CenterEnd),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // 提取工单按钮
+                Button(
+                    onClick = {
+                        scope.launch {
+                            isLoading = true
+                            try {
+                                fetchIncidentsFromAPI(context)
+                                isLoading = false
     } catch (e: Exception) {
-        Log.e("MarkdownText", "JSON解析失败", e)
-        null
+                                isLoading = false
+                                errorMessage = "获取工单失败: ${e.message}"
+                            }
+                        }
+                    },
+                    enabled = !isLoading,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4CAF50)
+                    )
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("提取工单")
+                    }
+                }
+                
+                // 添加工单按钮
+                IconButton(onClick = { showAddDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "添加工单")
+                }
+            }
+        }
+        
+        // 可滚动的内容区域
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            // 工单列表
+            if (workOrders.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.Center),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "暂无工单信息",
+                        color = Color.Gray,
+                        fontSize = 16.sp
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(workOrders) { workOrder ->
+                        WorkOrderItem(
+                            workOrder = workOrder,
+                            onViewRecord = { onWorkOrderSelected(workOrder.id) },
+                            onDelete = { showDeleteDialog = workOrder.id }
+                        )
+                    }
+                }
+            }
+        }
+    }
+    
+    // 添加工单对话框
+    if (showAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            title = { Text("添加工单") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    OutlinedTextField(
+                        value = eventNumber,
+                        onValueChange = { eventNumber = it },
+                        label = { Text("事件编号") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    )
+                    
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("姓名") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    )
+                    
+                    OutlinedTextField(
+                        value = phoneNumber,
+                        onValueChange = { phoneNumber = it },
+                        label = { Text("电话号码") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    )
+                    
+                    OutlinedTextField(
+                        value = eventTime,
+                        onValueChange = { eventTime = it },
+                        label = { Text("事发时间") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    )
+                    
+                    OutlinedTextField(
+                        value = deadline,
+                        onValueChange = { deadline = it },
+                        label = { Text("处理期限") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    )
+                    
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        label = { Text("事件描述") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        minLines = 3
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (eventNumber.isNotBlank() && name.isNotBlank()) {
+                            val newWorkOrder = WorkOrder(
+                                eventNumber = eventNumber,
+                                name = name,
+                                phoneNumber = phoneNumber,
+                                eventTime = eventTime,
+                                deadline = deadline,
+                                description = description
+                            )
+                            AppState.workOrders.add(0, newWorkOrder)
+                            
+                            // 保存到本地存储
+                            AppState.saveWorkOrdersToLocal(context)
+                            
+                            // 重置表单
+                            eventNumber = ""
+                            name = ""
+                            phoneNumber = ""
+                            eventTime = ""
+                            deadline = ""
+                            description = ""
+                            
+                            showAddDialog = false
+                        }
+                    }
+                ) {
+                    Text("添加")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+    
+    // 删除确认对话框
+    if (showDeleteDialog != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = null },
+            title = { Text("确认删除") },
+            text = { Text("确定要删除这个工单吗？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val workOrderId = showDeleteDialog!!
+                        AppState.workOrders.removeAll { it.id == workOrderId }
+                        
+                        // 保存到本地存储
+                        AppState.saveWorkOrdersToLocal(context)
+                        
+                        showDeleteDialog = null
+                    }
+                ) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun WorkOrderItem(
+    workOrder: WorkOrder,
+    onViewRecord: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "事件编号: ${workOrder.eventNumber}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "删除工单"
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Text(
+                text = "姓名: ${workOrder.name}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            
+            Text(
+                text = "电话: ${workOrder.phoneNumber}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            
+            Text(
+                text = "事发时间: ${workOrder.eventTime}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            
+            Text(
+                text = "处理期限: ${workOrder.deadline}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            
+            Text(
+                text = "事件描述: ${workOrder.description}",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Button(
+                onClick = onViewRecord,
+                modifier = Modifier.align(Alignment.End),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2196F3)
+                )
+            ) {
+                Text("办事记录")
+            }
+        }
     }
 }
 
@@ -2828,135 +3657,239 @@ private suspend fun sendFeedback(content: String, context: Context): Boolean {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ChatHistoryScreen(
-    onNewChat: () -> Unit,
-    onChatSelected: (String) -> Unit,
-    viewModel: ChatViewModel = viewModel()
-) {
-    var showDeleteDialog by remember { mutableStateOf<String?>(null) }
-    
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFFF5F5F5))
-    ) {
-        // 顶部栏 (固定不滚动)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.White)
-                .padding(16.dp)
-        ) {
-            Text(
-                text = "对话历史",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
-                modifier = Modifier.align(Alignment.CenterStart)
-            )
+// 从API获取工单数据
+private suspend fun fetchIncidentsFromAPI(context: Context) {
+    return withContext(Dispatchers.IO) {
+        try {
+            // 检查网络连接
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val networkInfo = connectivityManager.activeNetworkInfo
+            if (networkInfo == null || !networkInfo.isConnected) {
+                throw Exception("网络连接不可用，请检查网络设置")
+            }
             
-            IconButton(
-                onClick = onNewChat,
-                modifier = Modifier.align(Alignment.CenterEnd)
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "新建对话")
-            }
-        }
-        
-        // 可滚动的内容区域
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-        ) {
-            // 历史对话列表
-            LazyColumn {
-                items(viewModel.chatHistories) { chat ->
-                    ChatHistoryItem(
-                        chat = chat,
-                        onClick = { onChatSelected(chat.id) },
-                        onDelete = { showDeleteDialog = chat.id }
-                    )
+            val url = URL("http://175.12.103.10:58083/plugIn/search")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
+            
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val inputStream = connection.inputStream
+                val reader = BufferedReader(InputStreamReader(inputStream))
+                val response = StringBuilder()
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    response.append(line)
                 }
-            }
-        }
-    }
-    
-    // 删除确认对话框
-    if (showDeleteDialog != null) {
-        AlertDialog(
-            onDismissRequest = { showDeleteDialog = null },
-            title = { Text("确认删除") },
-            text = { Text("确定要删除这个对话吗？") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.deleteChatHistory(showDeleteDialog!!)
-                        showDeleteDialog = null
+                reader.close()
+                
+                // 解析返回的JSON
+                val jsonResponse = JSONObject(response.toString())
+                val code = jsonResponse.getInt("code")
+                
+                if (code == 200) {
+                    val dataArray = jsonResponse.getJSONArray("data")
+                    val incidents = mutableListOf<Incident>()
+                    
+                    for (i in 0 until dataArray.length()) {
+                        val incidentJson = dataArray.getJSONObject(i)
+                        incidents.add(
+                            Incident(
+                                eventCode = incidentJson.getString("eventCode"),
+                                name = incidentJson.getString("name"),
+                                phone = incidentJson.getString("phone"),
+                                eventTime = incidentJson.getString("eventTime"),
+                                deadline = incidentJson.getString("deadline"),
+                                description = incidentJson.getString("description")
+                            )
+                        )
                     }
-                ) {
-                    Text("删除")
+                    
+                    // 将incidents转换为WorkOrder并更新到AppState
+                    withContext(Dispatchers.Main) {
+                        val newWorkOrders = incidents.map { incident ->
+                            WorkOrder(
+                                eventNumber = incident.eventCode,
+                                name = incident.name,
+                                phoneNumber = incident.phone,
+                                eventTime = incident.eventTime,
+                                deadline = incident.deadline,
+                                description = incident.description
+                            )
+                        }
+                        
+                        // 清除现有数据，添加新数据
+                        AppState.workOrders.clear()
+                        AppState.workOrders.addAll(newWorkOrders)
+                        
+                        // 保存到本地存储
+                        AppState.saveWorkOrdersToLocal(context)
+                    }
+                } else {
+                    val msg = jsonResponse.optString("msg", "未知错误")
+                    throw Exception(msg)
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteDialog = null }) {
-                    Text("取消")
-                }
+            } else {
+                throw Exception("服务器返回错误: $responseCode")
             }
-        )
-    }
-}
-
-@Composable
-fun ChatHistoryItem(
-    chat: ChatHistory,
-    onClick: () -> Unit,
-    onDelete: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .clickable(onClick = onClick),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(16.dp)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = chat.title,
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = chat.lastMessage,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = formatTimestamp(chat.timestamp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            
-            IconButton(onClick = onDelete) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "删除对话"
-                )
-            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            throw Exception("获取工单数据失败: ${e.message}")
         }
     }
 }
 
-private fun formatTimestamp(timestamp: Long): String {
-    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
-    return sdf.format(Date(timestamp))
+// 添加上传云端的函数和相关数据类
+data class UploadResponse(
+    val code: Int,
+    val message: String?,  // 修改为可空类型
+    val data: Map<String, Any>? = null
+)
+
+suspend fun uploadToCloud(
+    context: Context,
+    eventCode: String,
+    eventTime: String,
+    summary: String,
+    photos: List<Uri>,
+    audioFiles: List<File>
+): UploadResponse {
+    return withContext(Dispatchers.IO) {
+        try {
+            // 检查网络连接
+            if (!isNetworkAvailable(context)) {
+                throw Exception("网络连接不可用，请检查网络设置")
+            }
+            
+            // 上传API地址
+            val url = URL("http://175.12.103.10:58083/events")
+            val boundary = UUID.randomUUID().toString()
+            
+            // 打开连接
+            val connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            connection.doInput = true
+            connection.connectTimeout = 30000
+            connection.readTimeout = 30000
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            
+            // 准备上传数据
+            val outputStream = connection.outputStream
+            val writer = outputStream.bufferedWriter()
+            
+            // 添加JSON数据部分
+            writer.write("--$boundary\r\n")
+            writer.write("Content-Disposition: form-data; name=\"data\"; type=application/json\r\n")
+            writer.write("Content-Type: application/json\r\n\r\n")
+            
+            // 创建JSON数据
+            val jsonData = JSONObject().apply {
+                put("eventCode", eventCode)
+                put("eventTime", eventTime)
+                put("summary", summary)
+            }
+            writer.write(jsonData.toString())
+            writer.write("\r\n")
+            
+            // 添加照片文件
+            photos.forEachIndexed { index, uri ->
+                try {
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    inputStream?.use { input ->
+                        writer.write("--$boundary\r\n")
+                        writer.write("Content-Disposition: form-data; name=\"photos\"; filename=\"photo_$index.jpg\"\r\n")
+                        writer.write("Content-Type: image/jpeg\r\n\r\n")
+                        writer.flush()
+                        
+                        // 写入文件内容
+                        val buffer = ByteArray(4096)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            outputStream.write(buffer, 0, bytesRead)
+                        }
+                        outputStream.flush()
+                        writer.write("\r\n")
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            
+            // 添加音频文件
+            audioFiles.forEachIndexed { index, file ->
+                try {
+                    val inputStream = FileInputStream(file)
+                    inputStream.use { input ->
+                        writer.write("--$boundary\r\n")
+                        writer.write("Content-Disposition: form-data; name=\"audios\"; filename=\"audio_$index.wav\"\r\n")
+                        writer.write("Content-Type: audio/wav\r\n\r\n")
+                        writer.flush()
+                        
+                        // 写入文件内容
+                        val buffer = ByteArray(4096)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            outputStream.write(buffer, 0, bytesRead)
+                        }
+                        outputStream.flush()
+                        writer.write("\r\n")
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            
+            // 完成请求
+            writer.write("--$boundary--\r\n")
+            writer.flush()
+            writer.close()
+            
+            // 获取响应
+            val responseCode = connection.responseCode
+            val responseMessage = connection.responseMessage
+            
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val jsonResponse = JSONObject(response)
+                val code = jsonResponse.optInt("code")
+                val message = jsonResponse.optString("msg", null)  // 使用null作为默认值，而不是空字符串
+                
+                // 解析data部分
+                val data = jsonResponse.optJSONObject("data")
+                val dataMap = mutableMapOf<String, Any>()
+                
+                if (data != null) {
+                    val keys = data.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        dataMap[key] = data.get(key)
+                    }
+                }
+                
+                UploadResponse(code, message, dataMap)
+            } else {
+                throw Exception("服务器返回错误: $responseCode $responseMessage")
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            throw Exception("上传失败: ${e.message}")
+        }
+    }
+}
+
+// 检查网络连接是否可用
+fun isNetworkAvailable(context: Context): Boolean {
+    val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    } else {
+        val networkInfo = connectivityManager.activeNetworkInfo
+        return networkInfo != null && networkInfo.isConnected
+    }
 }
