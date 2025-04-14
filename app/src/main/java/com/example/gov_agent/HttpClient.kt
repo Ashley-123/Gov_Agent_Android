@@ -136,18 +136,22 @@ object HttpClient {
             connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
             
             DataOutputStream(connection.outputStream).use { outputStream ->
-                // 添加表单数据
-                for ((key, value) in formData) {
-                    outputStream.writeBytes("--$boundary\r\n")
-                    outputStream.writeBytes("Content-Disposition: form-data; name=\"$key\"\r\n")
-                    outputStream.writeBytes("\r\n")
-                    outputStream.writeBytes("$value\r\n")
-                }
+                // 添加JSON数据
+                outputStream.writeBytes("--$boundary\r\n")
+                outputStream.writeBytes("Content-Disposition: form-data; name=\"data\"\r\n")
+                outputStream.writeBytes("Content-Type: application/json; charset=utf-8\r\n")
+                outputStream.writeBytes("\r\n")
+                outputStream.writeBytes(formData["data"] + "\r\n")
                 
                 // 添加文件数据
                 outputStream.writeBytes("--$boundary\r\n")
                 outputStream.writeBytes("Content-Disposition: form-data; name=\"$fileField\"; filename=\"${file.name}\"\r\n")
-                outputStream.writeBytes("Content-Type: ${getMimeType(file.name)}\r\n")
+                val mimeType = when (fileField) {
+                    "photos" -> "image/jpeg"
+                    "audios" -> "audio/mpeg"
+                    else -> getMimeType(file.name)
+                }
+                outputStream.writeBytes("Content-Type: $mimeType\r\n")
                 outputStream.writeBytes("\r\n")
                 
                 // 写入文件内容
@@ -160,6 +164,87 @@ object HttpClient {
                 }
                 
                 outputStream.writeBytes("\r\n")
+                outputStream.writeBytes("--$boundary--\r\n")
+                outputStream.flush()
+            }
+            
+            val responseCode = connection.responseCode
+            return if (responseCode == HttpURLConnection.HTTP_OK) {
+                readResponse(connection)
+            } else {
+                val errorMessage = readErrorResponse(connection)
+                throw IOException("HTTP错误: $responseCode, $errorMessage")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+    
+    /**
+     * 上传多个文件和JSON数据
+     */
+    @Throws(IOException::class)
+    fun uploadMultipleFiles(
+        urlString: String,
+        jsonData: String,
+        photos: List<File>,
+        audios: List<File>,
+        trustAllCertificates: Boolean = false
+    ): String {
+        val url = URL(urlString)
+        val connection = createConnection(url, trustAllCertificates)
+        val boundary = "---------------------------" + System.currentTimeMillis()
+        
+        try {
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            connection.connectTimeout = DEFAULT_CONNECT_TIMEOUT
+            connection.readTimeout = DEFAULT_READ_TIMEOUT * 2
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            
+            DataOutputStream(connection.outputStream).use { outputStream ->
+                // 添加JSON数据
+                outputStream.writeBytes("--$boundary\r\n")
+                outputStream.writeBytes("Content-Disposition: form-data; name=\"data\"\r\n")
+                outputStream.writeBytes("Content-Type: application/json; charset=utf-8\r\n")
+                outputStream.writeBytes("\r\n")
+                outputStream.writeBytes(jsonData + "\r\n")
+                
+                // 添加照片文件
+                photos.forEach { file ->
+                    outputStream.writeBytes("--$boundary\r\n")
+                    outputStream.writeBytes("Content-Disposition: form-data; name=\"photos\"; filename=\"${file.name}\"\r\n")
+                    outputStream.writeBytes("Content-Type: image/jpeg\r\n")
+                    outputStream.writeBytes("\r\n")
+                    
+                    FileInputStream(file).use { input ->
+                        val buffer = ByteArray(4096)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            outputStream.write(buffer, 0, bytesRead)
+                        }
+                    }
+                    outputStream.writeBytes("\r\n")
+                }
+                
+                // 添加音频文件
+                audios.forEach { file ->
+                    outputStream.writeBytes("--$boundary\r\n")
+                    outputStream.writeBytes("Content-Disposition: form-data; name=\"audios\"; filename=\"${file.name}\"\r\n")
+                    outputStream.writeBytes("Content-Type: audio/mpeg\r\n")
+                    outputStream.writeBytes("\r\n")
+                    
+                    FileInputStream(file).use { input ->
+                        val buffer = ByteArray(4096)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            outputStream.write(buffer, 0, bytesRead)
+                        }
+                    }
+                    outputStream.writeBytes("\r\n")
+                }
+                
+                // 写入结束标记
                 outputStream.writeBytes("--$boundary--\r\n")
                 outputStream.flush()
             }

@@ -144,6 +144,7 @@ import android.net.NetworkCapabilities
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import javax.net.ssl.*
+import java.nio.charset.StandardCharsets
 
 // 用户数据类
 data class User(
@@ -846,22 +847,6 @@ fun LoginScreen(onLoginSuccess: () -> Unit) {
                 }
                 
                 Spacer(modifier = Modifier.height(16.dp))
-                
-                // 提示信息
-                Text(
-                    text = "默认用户名: admin, 密码: 123456",
-                    color = Color.Gray,
-                    fontSize = 12.sp
-                )
-                
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                // 名称提示
-                Text(
-                    text = "登录后用户名将显示在个人中心",
-                    color = Color(0xFF1E88E5),
-                    fontSize = 12.sp
-                )
             }
             
             // 应用版本信息
@@ -1392,6 +1377,15 @@ fun MeetingRecordScreen(workOrderId: String? = null) {
         }
     }
     
+    // 相册选择器启动器
+    val galleryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        uris.forEach { uri ->
+            photos = photos + PhotoRecord(uri)
+        }
+    }
+    
     // 权限请求
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -1868,6 +1862,7 @@ fun MeetingRecordScreen(workOrderId: String? = null) {
                         .height(100.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // 显示已有照片
                     items(photos) { photo ->
                         AsyncImage(
                             model = photo.uri,
@@ -1882,21 +1877,38 @@ fun MeetingRecordScreen(workOrderId: String? = null) {
                         )
                     }
                     
-                    // 如果没有照片，显示提示
-                    if (photos.isEmpty()) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .size(100.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color.LightGray.copy(alpha = 0.3f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "暂无照片",
-                                    color = Color.Gray
-                                )
-                            }
+                    // 始终显示导入按钮
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .size(100.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.LightGray.copy(alpha = 0.3f))
+                                .clickable {
+                                    // 检查权限
+                                    val permissions = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                        arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+                                    } else {
+                                        arrayOf(
+                                            Manifest.permission.READ_EXTERNAL_STORAGE,
+                                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                        )
+                                    }
+                                    
+                                    if (hasPermissions(context, permissions)) {
+                                        // 已有权限，直接打开相册
+                                        galleryLauncher.launch("image/*")
+                                    } else {
+                                        // 请求权限
+                                        permissionLauncher.launch(permissions)
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "相册导入",
+                                color = Color.Gray
+                            )
                         }
                     }
                 }
@@ -4067,6 +4079,35 @@ data class UploadResponse(
     val data: Map<String, Any>? = null
 )
 
+// 添加文件大小限制常量
+private const val MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+
+// 添加图片压缩函数
+private fun compressImage(context: Context, uri: Uri): File? {
+    try {
+        val bitmap = android.graphics.BitmapFactory.decodeStream(
+            context.contentResolver.openInputStream(uri)
+        )
+        
+        // 计算压缩比例
+        var quality = 100
+        val tempFile = File(context.cacheDir, "compressed_${System.currentTimeMillis()}.jpg")
+        
+        do {
+            tempFile.outputStream().use { outputStream ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, outputStream)
+            }
+            quality -= 10
+        } while (tempFile.length() > MAX_FILE_SIZE && quality > 10)
+        
+        return if (tempFile.length() <= MAX_FILE_SIZE) tempFile else null
+    } catch (e: Exception) {
+        Log.e("ImageCompress", "压缩图片失败", e)
+        return null
+    }
+}
+
+// 修改上传函数
 suspend fun uploadToCloud(
     context: Context,
     eventCode: String,
@@ -4079,84 +4120,120 @@ suspend fun uploadToCloud(
         try {
             // 检查网络连接
             if (!isNetworkAvailable(context)) {
+                Log.e("CloudUpload", "网络连接不可用")
                 throw Exception("网络连接不可用，请检查网络设置")
             }
             
-            // 创建包含JSON数据的文件
+            // 检查是否有数据需要上传
+            if (photos.isEmpty() && audioFiles.isEmpty() && summary.isBlank()) {
+                Log.e("CloudUpload", "没有数据需要上传")
+                throw Exception("没有数据需要上传")
+            }
+
+            // 创建JSON数据
+            val cleanSummary = summary.trim()
+                .let { text ->
+                    // 先确保文本是有效的UTF-8
+                    val bytes = text.toByteArray(StandardCharsets.UTF_8)
+                    String(bytes, StandardCharsets.UTF_8)
+                }
+                .let { text ->
+                    text.map { char ->
+                        when {
+                            char.code < 32 -> "\\u%04x".format(char.code) // ASCII 0-31的控制字符
+                            char == '\n' -> "\\n"
+                            char == '\r' -> "\\r"
+                            char == '\t' -> "\\t"
+                            char == '"' -> "\\\""
+                            char == '\\' -> "\\\\"
+                            char.code > 127 -> "\\u%04x".format(char.code) // 将非ASCII字符转换为Unicode转义序列
+                            else -> char.toString()
+                        }
+                    }.joinToString("")
+                }
+
             val jsonData = JSONObject().apply {
-                put("eventCode", eventCode)
-                put("eventTime", eventTime)
-                put("summary", summary)
+                put("eventCode", eventCode.trim())
+                put("eventTime", eventTime.trim())
+                put("summary", cleanSummary)
             }.toString()
             
-            val jsonTempFile = File(context.cacheDir, "event_data.json")
-            jsonTempFile.writeText(jsonData)
+            // 最后确保整个JSON字符串是UTF-8编码
+            val finalJsonData = String(jsonData.toByteArray(StandardCharsets.UTF_8), StandardCharsets.UTF_8)
             
-            Log.d("CloudUpload", "开始上传数据到云端")
+            Log.d("CloudUpload", "准备上传的JSON数据: $finalJsonData")
             
-            // 上传每个照片文件
-            val photoResults = photos.mapIndexed { index, uri ->
+            // 处理照片文件
+            val photoFiles = photos.mapIndexed { index, uri ->
                 try {
-                    val photoFile = context.contentResolver.openInputStream(uri)?.use { input ->
+                    // 检查原始文件大小
+                    val fileSize = context.contentResolver.openInputStream(uri)?.use { it.available() } ?: 0
+                    Log.d("CloudUpload", "照片 $index 原始大小: ${fileSize / 1024}KB")
+                    
+                    if (fileSize > MAX_FILE_SIZE) {
+                        Log.d("CloudUpload", "照片 $index 需要压缩")
+                        // 压缩图片
+                        val compressedFile = compressImage(context, uri)
+                        if (compressedFile == null) {
+                            Log.e("CloudUpload", "照片 $index 压缩失败")
+                            throw Exception("照片文件过大，压缩后仍超过限制（${MAX_FILE_SIZE / 1024 / 1024}MB）")
+                        }
+                        Log.d("CloudUpload", "照片 $index 压缩后大小: ${compressedFile.length() / 1024}KB")
+                        compressedFile
+                    } else {
+                        // 直接复制原始文件
                         val tempFile = File(context.cacheDir, "photo_$index.jpg")
-                        tempFile.outputStream().use { output ->
-                            input.copyTo(output)
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            tempFile.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
                         }
                         tempFile
                     }
-                    
-                    if (photoFile != null) {
-                        // 上传照片文件
-                        val result = HttpClient.uploadFile(
-                            urlString = "https://175.12.103.10:58083/events",
-                            formData = mapOf("eventCode" to eventCode, "eventTime" to eventTime),
-                            fileField = "photos",
-                            file = photoFile,
-                            trustAllCertificates = true
-                        )
-                        Log.d("CloudUpload", "照片 $index 上传成功")
-                        true
-                    } else {
-                        Log.e("CloudUpload", "无法读取照片 $index")
-                        false
-                    }
                 } catch (e: Exception) {
-                    Log.e("CloudUpload", "上传照片 $index 失败", e)
-                    false
+                    Log.e("CloudUpload", "处理照片 $index 失败: ${e.message}", e)
+                    throw e
                 }
             }
             
-            // 上传每个音频文件
-            val audioResults = audioFiles.mapIndexed { index, file ->
-                try {
-                    // 上传音频文件
-                    val result = HttpClient.uploadFile(
-                        urlString = "https://175.12.103.10:58083/events",
-                        formData = mapOf("eventCode" to eventCode, "eventTime" to eventTime),
-                        fileField = "audios",
-                        file = file,
-                        trustAllCertificates = true
-                    )
-                    Log.d("CloudUpload", "音频 $index 上传成功")
-                    true
-                } catch (e: Exception) {
-                    Log.e("CloudUpload", "上传音频 $index 失败", e)
-                    false
+            // 检查音频文件大小
+            audioFiles.forEachIndexed { index, file ->
+                if (file.length() > MAX_FILE_SIZE) {
+                    throw Exception("音频文件 $index 过大（${file.length() / 1024 / 1024}MB），超过限制（${MAX_FILE_SIZE / 1024 / 1024}MB）")
                 }
             }
             
-            // 返回上传结果
-            val successCount = photoResults.count { it } + audioResults.count { it }
-            val totalCount = photos.size + audioFiles.size
-            
-            UploadResponse(
-                code = 200,
-                message = "成功上传 $successCount / $totalCount 个文件",
-                data = mapOf(
-                    "successCount" to successCount,
-                    "totalCount" to totalCount
+            // 执行上传
+            try {
+                val result = HttpClient.uploadMultipleFiles(
+                    urlString = "https://175.12.103.10:58083/events",
+                    jsonData = finalJsonData,
+                    photos = photoFiles,
+                    audios = audioFiles,
+                    trustAllCertificates = true
                 )
-            )
+                
+                Log.d("CloudUpload", "上传响应: $result")
+                
+                if (result.contains("success") || result.contains("200")) {
+                    // 返回上传结果
+                    UploadResponse(
+                        code = 200,
+                        message = "上传成功",
+                        data = mapOf(
+                            "response" to result
+                        )
+                    )
+                } else {
+                    throw Exception("服务器响应: $result")
+                }
+            } catch (e: Exception) {
+                Log.e("CloudUpload", "上传失败: ${e.message}", e)
+                throw Exception("上传失败: ${e.message}")
+            } finally {
+                // 清理临时文件
+                photoFiles.forEach { it.delete() }
+            }
         } catch (e: Exception) {
             Log.e("CloudUpload", "上传失败", e)
             throw Exception("上传失败: ${e.message}")
